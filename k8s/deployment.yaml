@@ -18,7 +18,7 @@ spec:
         - name: hello-blazor
           # 改成你的 registry/映像名稱
           image: hello-blazor:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Never
           ports:
             - name: http
               containerPort: 8080
