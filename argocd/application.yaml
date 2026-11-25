@@ -6,12 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: '172.19.54.234:8082/test'   # Harbor 位址/專案名稱（OCI 格式不加 http://）
-    chart: net-hello-chart               # 推送到 Harbor 的 Chart 名稱
-    targetRevision: '0.1.0'              # Chart 版本號
-    helm:
-      valueFiles:
-        - values.yaml
+    repoURL: 'https://github.com/blackbryant/net_hello.git'
+    targetRevision: HEAD
+    path: k8s
   destination:
     server: 'https://kubernetes.default.svc'
     namespace: demo-ns
