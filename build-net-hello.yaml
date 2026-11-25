@@ -1,0 +1,109 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-net-hello-
+  namespace: argo
+spec:
+  entrypoint: ci-pipeline
+  # workdir 用 PVC，讓各步驟（不同 Pod）共用同一份檔案
+  volumeClaimTemplates:
+    - metadata:
+        name: workdir
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 1Gi
+  volumes:
+    - name: harbor-auth
+      secret:
+        secretName: harbor-creds
+        items:
+          - key: .dockerconfigjson
+            path: config.json
+
+  templates:
+    - name: ci-pipeline
+      steps:
+        - - name: clone-repo
+            template: git-clone
+        - - name: build-and-push
+            template: kaniko-build
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{steps.clone-repo.outputs.parameters.tag}}"
+        - - name: update-manifest
+            template: update-manifest
+            arguments:
+              parameters:
+                - name: tag
+                  value: "{{steps.clone-repo.outputs.parameters.tag}}"
+
+    # 步驟 A：下載程式碼，並用 commit SHA 當作 image tag
+    - name: git-clone
+      container:
+        image: alpine/git:latest
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            git clone --depth 1 https://github.com/blackbryant/net_hello.git /workspace/src
+            git -C /workspace/src rev-parse --short HEAD > /workspace/tag
+            echo "tag = $(cat /workspace/tag)"
+        volumeMounts:
+          - name: workdir
+            mountPath: /workspace
+      outputs:
+        parameters:
+          - name: tag
+            valueFrom:
+              path: /workspace/tag
+
+    # 步驟 B：Kaniko 打包並推送至 Harbor（每次用不同 tag）
+    - name: kaniko-build
+      inputs:
+        parameters:
+          - name: tag
+      container:
+        image: gcr.io/kaniko-project/executor:latest
+        args:
+          - "--context=dir:///workspace/src"
+          - "--dockerfile=Dockerfile"
+          - "--destination=172.19.54.234:8082/test/net-hello:{{inputs.parameters.tag}}"
+          - "--insecure"          # 允許推送到 HTTP Harbor
+          - "--skip-tls-verify"   # 略過 TLS 憑證驗證
+        volumeMounts:
+          - name: workdir
+            mountPath: /workspace
+          - name: harbor-auth
+            mountPath: /kaniko/.docker/
+
+    # 步驟 C：把新 tag 寫回 GitHub 的 k8s/deployment.yaml，Argo CD 偵測到變更後自動部署
+    # 需要先建立 secret：
+    #   kubectl create secret generic github-creds -n argo --from-literal=token=<GitHub PAT>
+    - name: update-manifest
+      inputs:
+        parameters:
+          - name: tag
+      container:
+        image: alpine/git:latest
+        command: [sh, -c]
+        env:
+          - name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-creds
+                key: token
+        args:
+          - |
+            set -e
+            git clone --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/blackbryant/net_hello.git" /tmp/repo
+            cd /tmp/repo
+            sed -i "s|image: 172.19.54.234:8082/test/net-hello:.*|image: 172.19.54.234:8082/test/net-hello:{{inputs.parameters.tag}}|" k8s/deployment.yaml
+            git diff
+            if git diff --quiet; then echo "manifest 已是最新，不需更新"; exit 0; fi
+            git config user.name "argo-workflows"
+            git config user.email "argo-workflows@localhost"
+            git commit -am "更新 net-hello image 為 {{inputs.parameters.tag}} [skip ci]"
+            git push origin HEAD:main
