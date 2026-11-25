@@ -18,10 +18,10 @@ spec:
         - name: hello-blazor
           # 改成你的 registry/映像名稱
           image: 172.19.54.234:8082/test/net-hello:v1
-          imagePullPolicy: Never
+          imagePullPolicy: Always
           ports:
             - name: http
-              containerPort: 8082
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /healthz
